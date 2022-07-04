@@ -5,15 +5,15 @@ import visdom
 import torch
 import time
 from datetime import datetime
+import torch.nn as nn
 from buffers import *
-from models import *
 
 vis = visdom.Visdom(port=12345)
 
 USE_CUDA = False
-MODEL_SAVE_FOLDER = "dqnModel"
+MODEL_SAVE_FOLDER = "dqnPongModel"
 
-env = gym.make("CartPole-v0")
+env = gym.make("Pong-ram-v0")
 #env = gym.wrappers.Monitor(env, 'videos', force = True)
 
 #env.render()
@@ -29,18 +29,27 @@ GAMMA = 0.99
 
 losses = []
 
+class QNet(nn.Module):
+    def __init__(self, env):
+        super(QNet, self).__init__()
+
+        self.network = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, env.action_space.n),
+        )
+
+    def forward(self, state):
+        return self.network(state)
+
 #derived from https://github.com/higgsfield/RL-Adventure/blob/master/4.prioritized%20dqn.ipynb
 def tdUpdate(actionNetwork, evaluationNetwork, buffer, batchSize, beta=0.4):
     global losses
 
     samples, index, probs = buffer.getMiniBatch(batchSize)
     oldObs, obs, action, reward, done = zip(*samples)
-
-    #weights = (len(probs) * probs[index]) **(-beta)
-
-    #print(oldObs)
-    #print(evaluationNetwork(torch.tensor(oldObs, dtype=torch.float32).to(device)))
-    #input()
 
     actual = actionNetwork(torch.tensor(oldObs, dtype=torch.float32).to(device)).gather(1, torch.tensor(action).unsqueeze(1)).squeeze(1)
     target = torch.tensor(reward, dtype=torch.float32).to(device) + GAMMA * evaluationNetwork(torch.tensor(obs, dtype=torch.float32).to(device)).max(1)[0] * (1 -torch.tensor(done, dtype=torch.float32).to(device))
@@ -53,7 +62,7 @@ def tdUpdate(actionNetwork, evaluationNetwork, buffer, batchSize, beta=0.4):
     losses.append(loss.item())
     optimzer.zero_grad()
     loss.backward()
-    torch.nn.utils.clip_grad_value_(actionNetwork.parameters(), 1.0)
+    #torch.nn.utils.clip_grad_value_(actionNetwork.parameters(), 1.0)
     optimzer.step()
 
     buffer.updateTDErrorBatch(index, prios.cpu().detach().numpy())
@@ -66,19 +75,17 @@ Q2.load_state_dict(Q.state_dict())
 Q.to(device)
 Q2.to(device)
 
-buffer = PriorityReplayBuffer()
+buffer = PriorityReplayBuffer(1000000)
 
 criterion = torch.nn.MSELoss(reduction='sum')
 optimzer = torch.optim.RMSprop(Q.parameters(), lr=0.0001)
-
-alpha = 0.1
 
 NUM_FRAMES = 10000000
 frameNumber = 0
 gameNumber = 0
 STEPS_BEFORE_LEARNING = 50000
 
-BATCH_SIZE = 50
+BATCH_SIZE = 25
 MINI_BATCH_SIZE = 32
 batch_score = 0
 numStates = 0
@@ -86,7 +93,7 @@ numStates = 0
 #linear epsilon
 endE = 0.1
 startE = 1
-linearEpsilonLength = 200000
+linearEpsilonLength = 1000000
 
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000 #copy weights every 50 episodes
 averageScore = []
@@ -113,7 +120,6 @@ def max_action_value(q, state): # action
 
 while frameNumber < NUM_FRAMES:
     gameNumber += 1
-
     e = linearEpsilon(frameNumber - STEPS_BEFORE_LEARNING, startE, endE, linearEpsilonLength)
 
     g = 0 # total reward
@@ -125,7 +131,8 @@ while frameNumber < NUM_FRAMES:
         action = epsilon_greedy(Q,obs,e)
         oldObs = obs
 
-        obs,reward,done,inf = env.step(action)
+        for x in range(4):
+            obs,reward,done,inf = env.step(action)
 
         buffer.push((oldObs, obs, action, reward, done))
         g += reward
@@ -137,7 +144,6 @@ while frameNumber < NUM_FRAMES:
 
         if frameNumber % TARGET_NETWORK_UPDATE_FREQUENCY == 0:
             Q2.load_state_dict(Q.state_dict())
-
 
     batch_score += g/BATCH_SIZE
     if gameNumber % BATCH_SIZE == 0 and gameNumber != 0:
@@ -153,5 +159,3 @@ while frameNumber < NUM_FRAMES:
 
         duration = time.time() - startTime
         vis.text("Duration: {}<br>Avg Time:{}<br> gameNumber: {}<br> frameNumber: {}<br> epsilon: {}".format(duration, duration/(numStates), gameNumber, frameNumber, e), win="E", opts=dict(title="Epsilon"))
-
-print(Q)
